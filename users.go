@@ -20,6 +20,7 @@ type User struct {
 	Email     		string		`json:"email"`
 	Token			string		`json:"token"`
 	RefreshToken	string		`json:"refresh_token"`
+	IsChirpyRed		bool		`json:"is_chirpy_red"`
 }
 
 type ExpectedReq struct {
@@ -68,6 +69,7 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter,r *http.Request){
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -116,6 +118,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		Email: user.Email,
 		Token: tokenString,
 		RefreshToken: rTokenString,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
@@ -221,5 +224,84 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	reqData, err := decodeUserReq(r)
+	if err != nil {
+		w.WriteHeader(401)
+		return
+	}
 
+	hashedPw, err := auth.HashPassword(reqData.Password)
+	if err != nil {
+		w.WriteHeader(401)
+		return
+	}
+
+	params := database.UpdateUserParams{
+		HashedPassword: hashedPw,
+		Email: reqData.Email,
+		ID: userID,
+	}
+	user, err := cfg.db.UpdateUser(r.Context(), params)
+	if err != nil {
+		w.WriteHeader(500)
+		return
+	}
+
+	userResp := User{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+		IsChirpyRed: user.IsChirpyRed,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	marshalAndWrite(userResp, w)
+}
+
+func (cfg *apiConfig) handlerUpgradeRed(w http.ResponseWriter, r *http.Request) {
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil || apiKey != cfg.polkaKey {
+		w.WriteHeader(401)
+		return
+	}
+
+	type DataStruct struct {
+		UserID	string		`json:"user_id"`
+	}
+	type ExpectedReq struct {
+		Event	string		`json:"event"`
+		Data	DataStruct	`json:"data"`
+	}
+	var expectedReq ExpectedReq
+	decoder := json.NewDecoder(r.Body)
+	err = decoder.Decode(&expectedReq)
+	if err != nil {
+		w.WriteHeader(400)
+		return
+	}
+
+	const userUpdgraded = "user.upgraded"
+	if expectedReq.Event != userUpdgraded {
+		w.WriteHeader(204)
+		return
+	}
+
+	id, err := uuid.Parse(expectedReq.Data.UserID)
+	if err != nil {
+		w.WriteHeader(400)
+		return
+	}
+
+	_, err = cfg.db.UpgradeUserRed(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows){
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(500)
+		return
+	}
+
+	w.WriteHeader(204)
 }

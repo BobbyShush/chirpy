@@ -3,10 +3,13 @@ package main
 import (
 	"bootdev/chirpy/internal/auth"
 	"bootdev/chirpy/internal/database"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -114,13 +117,43 @@ func (cfg *apiConfig) authenticate(r *http.Request) (uuid.UUID, error) {
 }
 
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter,r *http.Request) {
-	chirps, err := cfg.db.GetChirps(r.Context())
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(500)
-		respBody := respErr{Error: "Something went wrong"}
-		marshalAndWrite(respBody, w)
-		return
+	authorID := r.URL.Query().Get("author_id")
+	sortDirection := r.URL.Query().Get("sort")
+	const desc = "desc"
+	var chirps []database.Chirp
+	var err error
+	if authorID != "" {
+		id, err := uuid.Parse(authorID)
+		if err != nil {
+			w.WriteHeader(400)
+			return
+		}
+		chirps, err = cfg.db.GetChirpsForUser(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				w.WriteHeader(404)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(500)
+			respBody := respErr{Error: "Something went wrong"}
+			marshalAndWrite(respBody, w)
+			return
+		}
+	} else {
+		chirps, err = cfg.db.GetChirps(r.Context())
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(500)
+			respBody := respErr{Error: "Something went wrong"}
+			marshalAndWrite(respBody, w)
+			return
+		}
+	}
+	if sortDirection == desc {
+		sort.Slice(chirps, func(i, j int) bool { 
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+		})
 	}
 
 	responseArr := make([]Chirp, len(chirps))
@@ -164,4 +197,46 @@ func (cfg *apiConfig) handlerGetChirpSingleton(w http.ResponseWriter,r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
 	marshalAndWrite(chp, w)
+}
+
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter,r *http.Request) {
+	user_id, err := cfg.authenticate(r)
+	if err != nil {
+		w.WriteHeader(401)
+		return
+	}
+
+	chirpID := r.PathValue("chirpID")
+	id, err := uuid.Parse(chirpID)
+	if err != nil {
+		w.WriteHeader(400)
+		return
+	}
+
+	chirp, err := cfg.db.GetChirp(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(500)
+		return
+	}
+
+	if user_id != chirp.UserID {
+		w.WriteHeader(403)
+		return
+	}
+
+	err = cfg.db.DeleteChirp(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(500)
+		return
+	}
+
+	w.WriteHeader(204)
 }

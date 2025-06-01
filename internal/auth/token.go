@@ -67,3 +67,11 @@ func MakeRefreshToken() (string, error) {
 	}
 	return hex.EncodeToString(randData), nil
 }
+
+func GetAPIKey(headers http.Header) (string, error) {
+	authValues, exists := headers["Authorization"]
+	if !exists {
+		return "", errors.New("No Authorization header found")
+	}
+	return strings.Split(authValues[0], " ")[1], nil
+}
